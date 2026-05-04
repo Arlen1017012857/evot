@@ -1,0 +1,7 @@
+[hooks]
+enabled = true
+timeout_ms = 5000
+
+[[hooks.handlers]]
+event = "run_finished"
+command = "./.evot/hooks/notify-feishu-run-finished.sh"
