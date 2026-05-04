@@ -13,6 +13,8 @@ use super::handle::RunHandle;
 use crate::context::CompactionStrategy;
 use crate::context::ContextConfig;
 use crate::context::ExecutionLimits;
+use crate::hooks::HookManager;
+use crate::hooks::HookRunContext;
 use crate::provider::ModelConfig;
 use crate::provider::StreamProvider;
 use crate::r#loop::AfterTurnFn;
@@ -66,6 +68,10 @@ pub struct Agent {
     // Spill: large tool results written to disk
     pub(super) spill: Option<Arc<FsSpill>>,
 
+    // Hooks
+    pub(super) hook_manager: Option<Arc<HookManager>>,
+    pub(super) hook_context: Option<HookRunContext>,
+
     // Control
     pub(super) cancel: Option<CancellationToken>,
     pub(super) is_streaming: bool,
@@ -108,6 +114,8 @@ impl Agent {
             input_filters: Vec::new(),
             compaction_strategy: None,
             spill: None,
+            hook_manager: None,
+            hook_context: None,
             cancel: None,
             is_streaming: false,
             last_run_handle: None,
@@ -265,6 +273,16 @@ impl Agent {
     /// Set spill from an optional value.
     pub fn with_spill_opt(mut self, spill: Option<Arc<FsSpill>>) -> Self {
         self.spill = spill;
+        self
+    }
+
+    pub fn with_hook_manager(mut self, hook_manager: Option<Arc<HookManager>>) -> Self {
+        self.hook_manager = hook_manager;
+        self
+    }
+
+    pub fn with_hook_context(mut self, hook_context: Option<HookRunContext>) -> Self {
+        self.hook_context = hook_context;
         self
     }
 

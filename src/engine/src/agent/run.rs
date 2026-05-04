@@ -252,6 +252,8 @@ impl Agent {
             after_turn: self.after_turn.clone(),
             input_filters: self.input_filters.clone(),
             spill: self.spill.clone(),
+            hook_manager: self.hook_manager.clone(),
+            hook_context: self.hook_context.clone(),
         }
     }
 }

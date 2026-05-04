@@ -283,6 +283,8 @@ async fn test_agent_loop_spill_integration() {
         after_turn: None,
         input_filters: vec![],
         spill: Some(spill),
+        hook_manager: None,
+        hook_context: None,
     };
 
     let tools: Vec<Box<dyn AgentTool>> = vec![Box::new(LargeOutputTool)];

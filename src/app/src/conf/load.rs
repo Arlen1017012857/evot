@@ -3,6 +3,8 @@ use std::io::BufRead;
 use std::path::Path;
 
 use evot_engine::provider::CompatCaps;
+use evot_engine::HookEvent;
+use evot_engine::HookHandler;
 use indexmap::IndexMap;
 
 use crate::conf::default_config;
@@ -31,6 +33,7 @@ struct ConfigSource {
     storage: StorageSource,
     channel: ChannelSource,
     sandbox: SandboxSource,
+    hooks: HooksSource,
     telemetry: TelemetrySource,
 }
 
@@ -115,6 +118,21 @@ struct SandboxSource {
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
+struct HooksSource {
+    enabled: Option<bool>,
+    timeout_ms: Option<u64>,
+    handlers: Option<Vec<HookHandlerSource>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HookHandlerSource {
+    event: HookEvent,
+    tool: Option<String>,
+    command: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
 struct TelemetrySource {
     endpoint: Option<String>,
     capture_content: Option<bool>,
@@ -126,6 +144,19 @@ fn optional_string(value: String) -> Option<String> {
     } else {
         Some(value)
     }
+}
+
+fn expand_hook_command(command: &str) -> Result<String> {
+    let Some(rest) = command.strip_prefix("~/") else {
+        return Ok(command.to_string());
+    };
+    let split_at = rest
+        .char_indices()
+        .find_map(|(idx, ch)| if ch.is_whitespace() { Some(idx) } else { None })
+        .unwrap_or(rest.len());
+    let (path_part, suffix) = rest.split_at(split_at);
+    let expanded = paths::expand_home_path(&format!("~/{path_part}"))?;
+    Ok(format!("{}{}", expanded.display(), suffix))
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +222,8 @@ impl ConfigSource {
             }
         }
 
+        apply_hooks_source(self.hooks, config, false)?;
+
         // Telemetry
         if let Some(endpoint) = self.telemetry.endpoint {
             config.telemetry.endpoint = Some(endpoint);
@@ -201,6 +234,38 @@ impl ConfigSource {
 
         Ok(())
     }
+}
+
+fn apply_hooks_source(
+    hooks: HooksSource,
+    config: &mut Config,
+    append_handlers: bool,
+) -> Result<()> {
+    if let Some(enabled) = hooks.enabled {
+        config.hooks.enabled = enabled;
+    }
+    if let Some(timeout_ms) = hooks.timeout_ms {
+        config.hooks.timeout_ms = timeout_ms;
+    }
+    let Some(handlers) = hooks.handlers else {
+        return Ok(());
+    };
+
+    let mut expanded = Vec::with_capacity(handlers.len());
+    for handler in handlers {
+        let command = expand_hook_command(&handler.command)?;
+        expanded.push(HookHandler {
+            event: handler.event,
+            tool: handler.tool,
+            command,
+        });
+    }
+    if append_handlers {
+        config.hooks.handlers.extend(expanded);
+    } else {
+        config.hooks.handlers = expanded;
+    }
+    Ok(())
 }
 
 /// Normalize a provider name to lowercase kebab-case.
@@ -685,6 +750,17 @@ pub(super) fn load_config_inner(env_file: Option<&str>) -> Result<Config> {
     // 1. TOML
     let file_source = load_file_source(&paths::config_file_path()?)?;
     file_source.apply(&mut config)?;
+
+    // 1b. Project TOML hooks only. Project-level hooks live under .evot,
+    // append to global handlers, and may override scalar hook settings without
+    // changing LLM, storage, or channel settings.
+    let cwd = std::env::current_dir()
+        .map_err(|e| EvotError::Conf(format!("failed to resolve current directory: {e}")))?;
+    let project_config = cwd.join(".evot").join("evot.toml");
+    if project_config != paths::config_file_path()? {
+        let project_source = load_file_source(&project_config)?;
+        apply_hooks_source(project_source.hooks, &mut config, true)?;
+    }
 
     // 2. Env file
     let (env_path, is_custom_env) = match env_file {

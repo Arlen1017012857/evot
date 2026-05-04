@@ -579,6 +579,8 @@ async fn test_retry_on_rate_limit_succeeds() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let mut context = AgentContext {
@@ -643,6 +645,8 @@ async fn test_retry_exhausted_returns_error() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let mut context = AgentContext {
@@ -714,6 +718,8 @@ async fn test_auth_error_not_retried() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let mut context = AgentContext {
@@ -773,6 +779,8 @@ async fn test_retry_none_disables_retries() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let mut context = AgentContext {
@@ -1634,6 +1642,8 @@ async fn test_custom_compaction_strategy_is_called() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let prompt = AgentMessage::Llm(Message::user("Hello"));
@@ -1712,6 +1722,8 @@ async fn test_none_compaction_strategy_uses_default() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let prompt = AgentMessage::Llm(Message::user("Hello"));
@@ -2058,6 +2070,8 @@ async fn test_empty_response_retried_then_succeeds() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let mut context = AgentContext {
@@ -2133,6 +2147,8 @@ async fn test_empty_response_exhausts_retries() {
         after_turn: None,
         input_filters: vec![],
         spill: None,
+        hook_manager: None,
+        hook_context: None,
     };
 
     let mut context = AgentContext {

@@ -133,6 +133,7 @@ pub struct Agent {
     storage: RwLock<Arc<dyn Storage>>,
     variables: RwLock<Option<Arc<Variables>>>,
     sandbox: super::sandbox::SandboxPolicy,
+    hooks: Option<Arc<evot_engine::HookManager>>,
     /// session_id → (run_id, handle, done_flag)
     active_runs: Arc<parking_lot::Mutex<HashMap<String, ActiveRun>>>,
     /// OTel telemetry config (endpoint presence = enabled).
@@ -161,6 +162,7 @@ impl Agent {
             storage: RwLock::new(storage),
             variables: RwLock::new(None),
             sandbox: super::sandbox::SandboxPolicy::from_config(&config.sandbox),
+            hooks: evot_engine::HookManager::new(config.hooks.clone()).map(Arc::new),
             active_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             telemetry: config.telemetry.clone(),
             _telemetry_exporter: telemetry_exporter,
@@ -511,6 +513,7 @@ impl Agent {
             storage: _,
             variables: _,
             sandbox,
+            hooks,
             active_runs: _,
             telemetry: _,
             _telemetry_exporter: _,
@@ -529,6 +532,7 @@ impl Agent {
                 enabled: sandbox.enabled,
                 extra_dirs: sandbox.extra_dirs.clone(),
             },
+            hooks: hooks.clone(),
             active_runs: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             telemetry: TelemetryConfig::default(),
             _telemetry_exporter: None,
@@ -709,6 +713,9 @@ impl Agent {
                 compat_caps: llm.compat_caps,
                 cwd: cwd_path.to_path_buf(),
                 path_guard: sandbox_rt.path_guard,
+                hook_manager: self.hooks.clone(),
+                run_id: run_id.to_string(),
+                session_id: session_id.to_string(),
                 spill_dir: self
                     .spill_root
                     .as_ref()

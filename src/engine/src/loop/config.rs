@@ -5,6 +5,8 @@ use std::sync::Arc;
 use crate::context::CompactionStrategy;
 use crate::context::ContextConfig;
 use crate::context::ExecutionLimits;
+use crate::hooks::HookManager;
+use crate::hooks::HookRunContext;
 use crate::provider::ModelConfig;
 use crate::provider::StreamProvider;
 use crate::spill::FsSpill;
@@ -79,6 +81,10 @@ pub struct AgentLoopConfig {
 
     /// Spill: large tool results are written to disk instead of truncated.
     pub spill: Option<Arc<FsSpill>>,
+
+    /// Optional lifecycle/tool hook manager.
+    pub hook_manager: Option<Arc<HookManager>>,
+    pub hook_context: Option<HookRunContext>,
 }
 
 /// Default convert_to_llm: keep only user/assistant/toolResult messages.

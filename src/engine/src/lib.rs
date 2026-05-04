@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod context;
+pub mod hooks;
 mod r#loop;
 pub mod provider;
 pub mod retry;
@@ -16,6 +17,7 @@ pub use context::CompactionResult;
 pub use context::CompactionStats;
 pub use context::CompactionStrategy;
 pub use context::DefaultCompaction;
+pub use hooks::*;
 pub use r#loop::agent_loop;
 pub use r#loop::agent_loop_continue;
 pub use r#loop::AfterTurnFn;

@@ -53,6 +53,150 @@ fn config_with_port_overrides_server_port() {
 }
 
 #[test]
+fn load_config_reads_hooks_from_toml() -> TestResult {
+    let _guard = env_lock()
+        .lock()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    let temp = tempfile::tempdir()?;
+    let env_home = temp.path().join("home");
+    let project_dir = temp.path().join("project");
+    let project_evot_dir = project_dir.join(".evot");
+    std::fs::create_dir_all(env_home.join(".evotai"))?;
+    std::fs::create_dir_all(&project_evot_dir)?;
+    std::fs::write(
+        env_home.join(".evotai").join("evot.toml"),
+        r#"
+[llm]
+provider = "anthropic"
+
+[providers.anthropic]
+api_key = "toml-key"
+base_url = "https://api.anthropic.com"
+model = "toml-model"
+
+[hooks]
+enabled = true
+timeout_ms = 2500
+
+[[hooks.handlers]]
+event = "before_tool"
+tool = "bash"
+command = "~/.evotai/hooks/check-bash.sh"
+
+[[hooks.handlers]]
+event = "run_finished"
+command = "printf done"
+"#,
+    )?;
+
+    let original_home = std::env::var_os("HOME");
+    let original_cwd = std::env::current_dir()?;
+    std::env::set_var("HOME", &env_home);
+    std::env::set_current_dir(&project_dir)?;
+
+    let result = Config::load();
+
+    restore_env_var("HOME", original_home);
+    std::env::set_current_dir(original_cwd)?;
+
+    let config = result?;
+    assert!(config.hooks.enabled);
+    assert_eq!(config.hooks.timeout_ms, 2500);
+    assert_eq!(config.hooks.handlers.len(), 2);
+    assert_eq!(
+        config.hooks.handlers[0].event,
+        evot_engine::HookEvent::BeforeTool
+    );
+    assert_eq!(config.hooks.handlers[0].tool.as_deref(), Some("bash"));
+    assert_eq!(
+        config.hooks.handlers[0].command,
+        env_home
+            .join(".evotai")
+            .join("hooks")
+            .join("check-bash.sh")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        config.hooks.handlers[1].event,
+        evot_engine::HookEvent::RunFinished
+    );
+    assert_eq!(config.hooks.handlers[1].tool, None);
+    Ok(())
+}
+
+#[test]
+fn load_config_merges_project_hooks_after_global_hooks() -> TestResult {
+    let _guard = env_lock()
+        .lock()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    let temp = tempfile::tempdir()?;
+    let env_home = temp.path().join("home");
+    let project_dir = temp.path().join("project");
+    let project_evot_dir = project_dir.join(".evot");
+    std::fs::create_dir_all(env_home.join(".evotai"))?;
+    std::fs::create_dir_all(&project_evot_dir)?;
+    std::fs::write(
+        env_home.join(".evotai").join("evot.toml"),
+        r#"
+[llm]
+provider = "anthropic"
+
+[providers.anthropic]
+api_key = "toml-key"
+base_url = "https://api.anthropic.com"
+model = "toml-model"
+
+[hooks]
+enabled = true
+timeout_ms = 1000
+
+[[hooks.handlers]]
+event = "run_started"
+command = "~/.evotai/hooks/global.sh"
+"#,
+    )?;
+    std::fs::write(
+        project_evot_dir.join("evot.toml"),
+        r#"
+[hooks]
+timeout_ms = 2500
+
+[[hooks.handlers]]
+event = "run_finished"
+command = "./.evot/hooks/project.sh"
+"#,
+    )?;
+
+    let original_home = std::env::var_os("HOME");
+    let original_cwd = std::env::current_dir()?;
+    std::env::set_var("HOME", &env_home);
+    std::env::set_current_dir(&project_dir)?;
+
+    let result = Config::load();
+
+    restore_env_var("HOME", original_home);
+    std::env::set_current_dir(original_cwd)?;
+
+    let config = result?;
+    assert!(config.hooks.enabled);
+    assert_eq!(config.hooks.timeout_ms, 2500);
+    assert_eq!(config.hooks.handlers.len(), 2);
+    assert_eq!(
+        config.hooks.handlers[0].event,
+        evot_engine::HookEvent::RunStarted
+    );
+    assert_eq!(
+        config.hooks.handlers[1].event,
+        evot_engine::HookEvent::RunFinished
+    );
+    assert_eq!(config.hooks.handlers[1].command, "./.evot/hooks/project.sh");
+    Ok(())
+}
+
+#[test]
 fn load_config_prefers_process_env_over_env_file() -> TestResult {
     let _guard = env_lock()
         .lock()

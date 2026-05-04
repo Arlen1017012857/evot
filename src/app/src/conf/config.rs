@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use evot_engine::provider::CompatCaps;
+use evot_engine::HookConfig;
 use evot_engine::ThinkingLevel;
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -121,6 +122,7 @@ pub struct Config {
     pub storage: StorageConfig,
     pub channels: ChannelsConfig,
     pub sandbox: SandboxConfig,
+    pub hooks: HookConfig,
     pub skills_dirs: Vec<PathBuf>,
     /// The env file path actually used during config loading.
     pub env_file_path: PathBuf,
@@ -138,6 +140,7 @@ impl Config {
             storage: StorageConfig::fs(state_root),
             channels: ChannelsConfig::default(),
             sandbox: SandboxConfig::default(),
+            hooks: HookConfig::default(),
             skills_dirs: Vec::new(),
             env_file_path: PathBuf::new(),
             telemetry: crate::telemetry::config::TelemetryConfig::default(),

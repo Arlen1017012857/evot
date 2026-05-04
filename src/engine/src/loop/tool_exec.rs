@@ -6,6 +6,10 @@ use tokio::sync::mpsc;
 
 use super::config::GetMessagesFn;
 use crate::context;
+use crate::hooks::HookInvocation;
+use crate::hooks::HookManager;
+use crate::hooks::HookOutcome;
+use crate::hooks::HookRunContext;
 use crate::spill::FsSpill;
 use crate::tools::guard::PathGuard;
 use crate::types::*;
@@ -40,6 +44,9 @@ pub(super) async fn execute_tool_calls(
     cwd: &std::path::Path,
     path_guard: &Arc<PathGuard>,
     spill: &Option<Arc<FsSpill>>,
+    hook_manager: &Option<Arc<HookManager>>,
+    hook_context: &Option<HookRunContext>,
+    turn: usize,
 ) -> ToolExecutionResult {
     match strategy {
         ToolExecutionStrategy::Sequential => {
@@ -52,6 +59,9 @@ pub(super) async fn execute_tool_calls(
                 cwd,
                 path_guard,
                 spill,
+                hook_manager,
+                hook_context,
+                turn,
             )
             .await
         }
@@ -66,6 +76,9 @@ pub(super) async fn execute_tool_calls(
                     cwd,
                     path_guard,
                     spill,
+                    hook_manager,
+                    hook_context,
+                    turn,
                 )
                 .await
             } else {
@@ -78,6 +91,9 @@ pub(super) async fn execute_tool_calls(
                     cwd,
                     path_guard,
                     spill,
+                    hook_manager,
+                    hook_context,
+                    turn,
                 )
                 .await
             }
@@ -88,9 +104,35 @@ pub(super) async fn execute_tool_calls(
 
             for (batch_idx, batch) in tool_calls.chunks(*size).enumerate() {
                 let batch_result = if all_concurrency_safe(tools, batch) {
-                    execute_batch(tools, batch, tx, cancel, None, cwd, path_guard, spill).await
+                    execute_batch(
+                        tools,
+                        batch,
+                        tx,
+                        cancel,
+                        None,
+                        cwd,
+                        path_guard,
+                        spill,
+                        hook_manager,
+                        hook_context,
+                        turn,
+                    )
+                    .await
                 } else {
-                    execute_sequential(tools, batch, tx, cancel, None, cwd, path_guard, spill).await
+                    execute_sequential(
+                        tools,
+                        batch,
+                        tx,
+                        cancel,
+                        None,
+                        cwd,
+                        path_guard,
+                        spill,
+                        hook_manager,
+                        hook_context,
+                        turn,
+                    )
+                    .await
                 };
                 results.extend(batch_result.tool_results);
 
@@ -130,13 +172,29 @@ async fn execute_sequential(
     cwd: &std::path::Path,
     path_guard: &Arc<PathGuard>,
     spill: &Option<Arc<FsSpill>>,
+    hook_manager: &Option<Arc<HookManager>>,
+    hook_context: &Option<HookRunContext>,
+    turn: usize,
 ) -> ToolExecutionResult {
     let mut results: Vec<Message> = Vec::new();
     let mut steering_messages: Option<Vec<AgentMessage>> = None;
 
     for (index, (id, name, args)) in tool_calls.iter().enumerate() {
-        let (msg, _is_error) =
-            execute_single_tool(tools, id, name, args, tx, cancel, cwd, path_guard, spill).await;
+        let (msg, _is_error) = execute_single_tool(
+            tools,
+            id,
+            name,
+            args,
+            tx,
+            cancel,
+            cwd,
+            path_guard,
+            spill,
+            hook_manager,
+            hook_context,
+            turn,
+        )
+        .await;
         results.push(msg);
 
         // Check for steering — skip remaining tools if user interrupted
@@ -169,13 +227,29 @@ async fn execute_batch(
     cwd: &std::path::Path,
     path_guard: &Arc<PathGuard>,
     spill: &Option<Arc<FsSpill>>,
+    hook_manager: &Option<Arc<HookManager>>,
+    hook_context: &Option<HookRunContext>,
+    turn: usize,
 ) -> ToolExecutionResult {
     use futures::future::join_all;
 
     let futures: Vec<_> = tool_calls
         .iter()
         .map(|(id, name, args)| {
-            execute_single_tool(tools, id, name, args, tx, cancel, cwd, path_guard, spill)
+            execute_single_tool(
+                tools,
+                id,
+                name,
+                args,
+                tx,
+                cancel,
+                cwd,
+                path_guard,
+                spill,
+                hook_manager,
+                hook_context,
+                turn,
+            )
         })
         .collect();
 
@@ -213,6 +287,9 @@ async fn execute_single_tool(
     cwd: &std::path::Path,
     path_guard: &Arc<PathGuard>,
     spill: &Option<Arc<FsSpill>>,
+    hook_manager: &Option<Arc<HookManager>>,
+    hook_context: &Option<HookRunContext>,
+    turn: usize,
 ) -> (Message, bool) {
     let tool = tools.iter().find(|t| t.name() == name);
 
@@ -222,11 +299,30 @@ async fn execute_single_tool(
         tool_call_id: id.to_string(),
         tool_name: name.to_string(),
         args: args.clone(),
-        preview_command,
+        preview_command: preview_command.clone(),
     })
     .ok();
 
     let tool_start = std::time::Instant::now();
+
+    if let Some(block_reason) =
+        run_before_tool_hook(hook_manager, hook_context, BeforeToolHookInput {
+            cwd,
+            id,
+            name,
+            args,
+            preview_command: &preview_command,
+            turn,
+        })
+        .await
+    {
+        let result = ToolResult {
+            content: vec![Content::Text { text: block_reason }],
+            details: serde_json::json!({ "hook_blocked": true }),
+            retention: Retention::Normal,
+        };
+        return finish_tool_call(tx, id, name, result, true, tool_start.elapsed()).await;
+    }
 
     let on_update: Option<ToolUpdateFn> = {
         let tx = tx.clone();
@@ -317,8 +413,19 @@ async fn execute_single_tool(
     // Otherwise, fall back to truncation.
     let result = process_result(spill, id, name, result, is_error).await;
 
+    finish_tool_call(tx, id, name, result, is_error, tool_start.elapsed()).await
+}
+
+async fn finish_tool_call(
+    tx: &mpsc::UnboundedSender<AgentEvent>,
+    id: &str,
+    name: &str,
+    result: ToolResult,
+    is_error: bool,
+    duration: std::time::Duration,
+) -> (Message, bool) {
     let result_tokens = context::content_tokens(&result.content);
-    let tool_duration_ms = tool_start.elapsed().as_millis() as u64;
+    let tool_duration_ms = duration.as_millis() as u64;
 
     tx.send(AgentEvent::ToolExecutionEnd {
         tool_call_id: id.to_string(),
@@ -349,6 +456,51 @@ async fn execute_single_tool(
     .ok();
 
     (tool_result_msg, is_error)
+}
+
+struct BeforeToolHookInput<'a> {
+    cwd: &'a std::path::Path,
+    id: &'a str,
+    name: &'a str,
+    args: &'a serde_json::Value,
+    preview_command: &'a Option<String>,
+    turn: usize,
+}
+
+async fn run_before_tool_hook(
+    hook_manager: &Option<Arc<HookManager>>,
+    hook_context: &Option<HookRunContext>,
+    input: BeforeToolHookInput<'_>,
+) -> Option<String> {
+    let (Some(manager), Some(run_context)) = (hook_manager, hook_context) else {
+        return None;
+    };
+    let invocation = HookInvocation {
+        event: crate::hooks::HookEvent::BeforeTool,
+        cwd: input.cwd.to_path_buf(),
+        run_id: run_context.run_id.clone(),
+        session_id: run_context.session_id.clone(),
+        turn: usize_to_u32(input.turn),
+        tool: Some(input.name.to_string()),
+        payload: serde_json::json!({
+            "tool_call_id": input.id,
+            "tool_name": input.name,
+            "input": input.args,
+            "preview_command": input.preview_command,
+        }),
+    };
+    match manager.invoke(invocation).await {
+        HookOutcome::Allow => None,
+        HookOutcome::Block { reason } => Some(reason),
+    }
+}
+
+fn usize_to_u32(value: usize) -> u32 {
+    if value > u32::MAX as usize {
+        u32::MAX
+    } else {
+        value as u32
+    }
 }
 
 pub(super) fn skip_tool_call(

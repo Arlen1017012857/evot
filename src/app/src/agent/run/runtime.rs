@@ -52,6 +52,9 @@ pub struct EngineOptions {
     pub compat_caps: evot_engine::provider::CompatCaps,
     pub cwd: std::path::PathBuf,
     pub path_guard: std::sync::Arc<evot_engine::PathGuard>,
+    pub hook_manager: Option<Arc<evot_engine::HookManager>>,
+    pub run_id: String,
+    pub session_id: String,
     pub spill_dir: Option<std::path::PathBuf>,
 }
 
@@ -77,6 +80,8 @@ pub(in crate::agent) async fn execute_turn(
     on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
     telemetry_config: Option<&crate::telemetry::config::TelemetryConfig>,
 ) -> Result<Run> {
+    let app_hooks = turn.options.hook_manager.clone();
+    let hook_cwd = turn.options.cwd.clone();
     let mut engine = build_agent(turn.options, turn.history);
     let user_msg = evot_engine::AgentMessage::Llm(evot_engine::Message::User {
         content: turn.input.clone(),
@@ -101,8 +106,14 @@ pub(in crate::agent) async fn execute_turn(
         tx,
         turn.session,
         turn.input,
-        turn.run_id.clone(),
-        turn.session_id.clone(),
+        RunLoopIds {
+            run_id: turn.run_id.clone(),
+            session_id: turn.session_id.clone(),
+        },
+        RuntimeHooks {
+            manager: app_hooks,
+            cwd: hook_cwd,
+        },
         on_complete,
     ));
 
@@ -129,6 +140,16 @@ enum RuntimeEvent {
     },
 }
 
+struct RunLoopIds {
+    run_id: String,
+    session_id: String,
+}
+
+struct RuntimeHooks {
+    manager: Option<Arc<evot_engine::HookManager>>,
+    cwd: std::path::PathBuf,
+}
+
 // ---------------------------------------------------------------------------
 // run_loop — orchestrate a single run (transcript persistence + event relay)
 // ---------------------------------------------------------------------------
@@ -138,15 +159,19 @@ async fn run_loop(
     tx: mpsc::UnboundedSender<RunEvent>,
     session: Arc<Session>,
     input: Vec<evot_engine::Content>,
-    run_id: String,
-    session_id: String,
+    ids: RunLoopIds,
+    hooks: RuntimeHooks,
     on_complete: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
     let started_at = Instant::now();
+    let run_id = ids.run_id;
+    let session_id = ids.session_id;
     let ctx = RunEventContext::new(&run_id, &session_id, 0);
 
     // Send RunStarted
-    let _ = tx.send(ctx.started());
+    let started = ctx.started();
+    invoke_run_hook(&hooks.manager, &hooks.cwd, &started).await;
+    let _ = tx.send(started);
 
     let mut run_transcripts: Vec<TranscriptItem> = vec![TranscriptItem::user_from_content(&input)];
     let mut saved_count: usize = 0;
@@ -223,6 +248,7 @@ async fn run_loop(
                     transcript_count,
                     compact_history,
                 );
+                invoke_run_hook(&hooks.manager, &hooks.cwd, &finished_event).await;
                 let _ = tx.send(finished_event);
                 // Drop tx immediately so the consumer stream closes without
                 // waiting for transcript persistence.
@@ -231,6 +257,7 @@ async fn run_loop(
             }
             RuntimeEvent::Public(payload) => {
                 let event = RunEventContext::new(&run_id, &session_id, turn).event(payload);
+                invoke_run_hook(&hooks.manager, &hooks.cwd, &event).await;
                 if tx.send(event).is_err() {
                     break;
                 }
@@ -256,6 +283,58 @@ async fn run_loop(
 
     if let Some(f) = on_complete {
         f();
+    }
+}
+
+async fn invoke_run_hook(
+    hook_manager: &Option<Arc<evot_engine::HookManager>>,
+    cwd: &std::path::Path,
+    event: &RunEvent,
+) {
+    let Some(manager) = hook_manager else {
+        return;
+    };
+    let Some(hook_event) = hook_event_from_payload(&event.payload) else {
+        return;
+    };
+    let tool = match &event.payload {
+        RunEventPayload::ToolStarted { tool_name, .. }
+        | RunEventPayload::ToolFinished { tool_name, .. } => Some(tool_name.clone()),
+        _ => None,
+    };
+    let payload = serialize_or_placeholder(&event.payload, event.kind_str());
+    let invocation = evot_engine::HookInvocation {
+        event: hook_event,
+        cwd: cwd.to_path_buf(),
+        run_id: event.run_id.clone(),
+        session_id: event.session_id.clone(),
+        turn: event.turn,
+        tool,
+        payload,
+    };
+    let _ = manager.invoke(invocation).await;
+}
+
+fn hook_event_from_payload(payload: &RunEventPayload) -> Option<evot_engine::HookEvent> {
+    match payload {
+        RunEventPayload::RunStarted { .. } => Some(evot_engine::HookEvent::RunStarted),
+        RunEventPayload::TurnStarted { .. } => Some(evot_engine::HookEvent::TurnStarted),
+        RunEventPayload::AssistantCompleted { .. } => {
+            Some(evot_engine::HookEvent::AssistantCompleted)
+        }
+        RunEventPayload::ToolStarted { .. } => Some(evot_engine::HookEvent::ToolStarted),
+        RunEventPayload::ToolFinished { .. } => Some(evot_engine::HookEvent::ToolFinished),
+        RunEventPayload::LlmCallStarted { .. } => Some(evot_engine::HookEvent::LlmCallStarted),
+        RunEventPayload::LlmCallCompleted { .. } => Some(evot_engine::HookEvent::LlmCallCompleted),
+        RunEventPayload::ContextCompactionStarted { .. } => {
+            Some(evot_engine::HookEvent::ContextCompactionStarted)
+        }
+        RunEventPayload::ContextCompactionCompleted { .. } => {
+            Some(evot_engine::HookEvent::ContextCompactionCompleted)
+        }
+        RunEventPayload::RunFinished { .. } => Some(evot_engine::HookEvent::RunFinished),
+        RunEventPayload::Error { .. } => Some(evot_engine::HookEvent::Error),
+        RunEventPayload::AssistantDelta { .. } | RunEventPayload::ToolProgress { .. } => None,
     }
 }
 
@@ -910,6 +989,13 @@ pub(crate) fn build_agent(
             evot_engine::SkillSet::empty()
         }
     };
+    let cwd = options.cwd.clone();
+    let path_guard = options.path_guard.clone();
+    let hook_manager = options.hook_manager.clone();
+    let hook_context = evot_engine::HookRunContext {
+        run_id: options.run_id.clone(),
+        session_id: options.session_id.clone(),
+    };
 
     provider_agent
         .with_model(&options.model)
@@ -919,8 +1005,10 @@ pub(crate) fn build_agent(
         .with_messages(prior_messages)
         .with_execution_limits(limits)
         .with_tools(options.tools)
-        .with_cwd(options.cwd)
-        .with_path_guard(options.path_guard)
+        .with_cwd(cwd)
+        .with_path_guard(path_guard)
+        .with_hook_manager(hook_manager)
+        .with_hook_context(Some(hook_context))
         .with_skills(skills)
         .with_thinking(options.thinking_level)
         .with_spill_opt(
