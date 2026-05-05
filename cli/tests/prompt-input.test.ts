@@ -37,6 +37,9 @@ function defaultPromptVM(overrides?: Partial<PromptVMInput>): PromptVMInput {
     columns: 80,
     isLoading: false,
     placeholder: true,
+    cwd: '/Users/test/project',
+    gitRepo: 'project',
+    gitBranch: 'main',
     ...overrides,
   }
 }
