@@ -161,6 +161,27 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
   let preloadedSessions: SessionMeta[] = []
   try { preloadedSessions = await agent.listSessions(20) } catch {}
 
+  // Git info (computed once at startup, refreshed on cwd change)
+  let gitRepo: string | null = null
+  let gitBranch: string | null = null
+  function refreshGitInfo(cwd: string) {
+    try {
+      const branchResult = Bun.spawnSync(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd, stdout: 'pipe', stderr: 'pipe' })
+      gitBranch = branchResult.exitCode === 0 ? branchResult.stdout.toString().trim() : null
+      const repoResult = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel'], { cwd, stdout: 'pipe', stderr: 'pipe' })
+      if (repoResult.exitCode === 0) {
+        const fullPath = repoResult.stdout.toString().trim()
+        gitRepo = fullPath.split('/').pop() || null
+      } else {
+        gitRepo = null
+      }
+    } catch {
+      gitRepo = null
+      gitBranch = null
+    }
+  }
+  refreshGitInfo(agent.cwd)
+
   const bannerText = currentBannerText()
   renderer.appendScroll(bannerText)
   setTerminalTitle('✳')
@@ -201,6 +222,9 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       columns: renderer.termCols,
       isLoading,
       placeholder: isEditorEmpty(editor) && !isLoading,
+      cwd: appState.cwd,
+      gitRepo,
+      gitBranch,
     }
   }
 
@@ -963,6 +987,7 @@ export async function startRepl(opts: ReplOptions): Promise<void> {
       // Start a fresh session — clear screen, re-render banner, reset state
       sessionId = null
       appState = { ...createInitialState(appState.model, agent.cwd), verbose: appState.verbose }
+      refreshGitInfo(agent.cwd)
       renderer.clearScreen()
       compactLines.length = 0
       expandedLines.length = 0

@@ -19,6 +19,9 @@ export interface PromptVMInput {
   columns: number
   isLoading: boolean
   placeholder: boolean
+  cwd: string
+  gitRepo: string | null
+  gitBranch: string | null
 }
 
 export function buildPromptBlocks(input: PromptVMInput): ViewBlock[] {
@@ -76,22 +79,42 @@ export function buildPromptBlocks(input: PromptVMInput): ViewBlock[] {
 
 function buildFooter(input: PromptVMInput): ViewBlock {
   const leftSpans: StyledSpan[] = []
+
+  // model
+  leftSpans.push(dim(input.model))
+
+  // [log] / [plan] modes
   if (input.logMode) {
+    leftSpans.push(plain('  '))
     leftSpans.push(colored('[log]', 'magenta', { bold: true }))
     leftSpans.push(dim(' Esc to exit'))
   }
   if (input.planning) {
-    if (leftSpans.length > 0) leftSpans.push(plain('  '))
+    leftSpans.push(plain('  '))
     leftSpans.push(colored('[plan]', 'yellow', { bold: true }))
   }
 
+  // git repo · branch
+  if (input.gitRepo) {
+    leftSpans.push(dim(' · '))
+    let cwd = input.cwd
+    const home = process.env.HOME || process.env.USERPROFILE || ''
+    if (home && cwd.startsWith(home)) {
+      cwd = '~' + cwd.slice(home.length)
+    }
+    leftSpans.push(dim(cwd))
+    if (input.gitBranch) {
+      leftSpans.push(dim(' (' + input.gitBranch + ')'))
+    }
+  }
+
   const rightSpans: StyledSpan[] = []
-  rightSpans.push(dim(input.model))
   if (input.serverPort != null && input.serverUptime) {
-    rightSpans.push(colored(`  [server :${input.serverPort} · ${input.serverUptime}]`, 'green'))
+    rightSpans.push(colored(`[server :${input.serverPort} · ${input.serverUptime}]`, 'green'))
   }
   if (input.updateHint) {
-    rightSpans.push(colored(`  ${input.updateHint}`, 'yellow'))
+    if (rightSpans.length > 0) rightSpans.push(plain('  '))
+    rightSpans.push(colored(input.updateHint, 'yellow'))
   }
 
   const leftText = leftSpans.map(s => s.text).join('')
