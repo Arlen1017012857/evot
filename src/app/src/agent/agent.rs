@@ -195,6 +195,7 @@ impl Agent {
     }
 
     fn with_claude_skills_dirs(self: &Arc<Self>) -> Arc<Self> {
+        // Global Claude skills: ~/.claude/skills/
         if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
             let claude_dir = PathBuf::from(home).join(".claude").join("skills");
             if claude_dir.is_dir() {
@@ -204,6 +205,17 @@ impl Agent {
                 }
             }
         }
+
+        // Project-local Claude skills: <cwd>/.claude/skills/
+        // Added after global, so project-level skills override global ones (last wins).
+        let project_claude_dir = PathBuf::from(&self.cwd).join(".claude").join("skills");
+        if project_claude_dir.is_dir() {
+            let mut dirs = self.skills_dirs.write();
+            if !dirs.contains(&project_claude_dir) {
+                dirs.push(project_claude_dir);
+            }
+        }
+
         Arc::clone(self)
     }
 
