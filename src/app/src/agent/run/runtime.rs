@@ -334,7 +334,9 @@ fn hook_event_from_payload(payload: &RunEventPayload) -> Option<evot_engine::Hoo
         }
         RunEventPayload::RunFinished { .. } => Some(evot_engine::HookEvent::RunFinished),
         RunEventPayload::Error { .. } => Some(evot_engine::HookEvent::Error),
-        RunEventPayload::AssistantDelta { .. } | RunEventPayload::ToolProgress { .. } => None,
+        RunEventPayload::AssistantDelta { .. }
+        | RunEventPayload::ToolProgress { .. }
+        | RunEventPayload::LlmCallRetry { .. } => None,
     }
 }
 
